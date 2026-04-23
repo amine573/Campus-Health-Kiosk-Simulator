@@ -1,15 +1,15 @@
 const mongoose = require('mongoose');
-const { v4: uuidv4 } = require('uuid');
+
 
 // Entity: Token — short-lived, single-use authorization artifact
 const TokenSchema = new mongoose.Schema(
   {
     tokenId: {
-      type: String,
-      default: uuidv4,
-      unique: true,
-      index: true,
-    },
+  type: String,
+  default: () => require('crypto').randomUUID(),
+  unique: true,
+  index: true,
+},
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
