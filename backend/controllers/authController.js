@@ -31,7 +31,7 @@ exports.login = async (req, res) => {
   }
 
   try {
-    const user = await User.findOne({ campusId, ssoProvider: 'local' }).select('+password');
+    const user = await User.findOne({ campusId }).select('+password');
 
     if (!user || !(await user.comparePassword(password))) {
       await logAuth({ eventType: 'Authentication', outcome: 'Failure', details: `Failed login for campusId: ${campusId}` });
