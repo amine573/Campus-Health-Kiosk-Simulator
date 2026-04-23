@@ -1,0 +1,95 @@
+name: Scheduled Maintenance
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Every Monday at 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  # ── Weekly Dependency Audit ─────────────────────────────────────────────────
+  dependency-audit:
+    name: "📦 Weekly Dependency Audit"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Backend audit report
+        working-directory: backend
+        run: |
+          npm ci --prefer-offline
+          echo "### Backend Audit" >> $GITHUB_STEP_SUMMARY
+          npm audit --json 2>/dev/null | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          vulns = data.get('metadata', {}).get('vulnerabilities', {})
+          total = sum(vulns.values())
+          print(f'Total vulnerabilities: {total}')
+          for level, count in vulns.items():
+              if count > 0:
+                  print(f'  {level}: {count}')
+          " >> $GITHUB_STEP_SUMMARY || npm audit >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Frontend audit report
+        working-directory: frontend
+        run: |
+          npm ci --prefer-offline
+          echo "### Frontend Audit" >> $GITHUB_STEP_SUMMARY
+          npm audit --json 2>/dev/null | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          vulns = data.get('metadata', {}).get('vulnerabilities', {})
+          total = sum(vulns.values())
+          print(f'Total vulnerabilities: {total}')
+          for level, count in vulns.items():
+              if count > 0:
+                  print(f'  {level}: {count}')
+          " >> $GITHUB_STEP_SUMMARY || npm audit >> $GITHUB_STEP_SUMMARY || true
+
+  # ── Weekly Production Health Check ─────────────────────────────────────────
+  health-check:
+    name: "💓 Weekly Production Health Check"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check backend health
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+        run: |
+          if [ -z "$BACKEND_URL" ]; then
+            echo "ℹ️  BACKEND_URL not set — skipping backend health check"
+            exit 0
+          fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL/api/health")
+          if [ "$STATUS" = "200" ]; then
+            echo "✅ Backend healthy — HTTP $STATUS"
+            echo "### Backend Health: ✅ OK (HTTP $STATUS)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Backend unhealthy — HTTP $STATUS"
+            echo "### Backend Health: ❌ FAILED (HTTP $STATUS)" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+      - name: Check frontend health
+        env:
+          FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
+        run: |
+          if [ -z "$FRONTEND_URL" ]; then
+            echo "ℹ️  FRONTEND_URL not set — skipping frontend health check"
+            exit 0
+          fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL")
+          if [ "$STATUS" = "200" ]; then
+            echo "✅ Frontend healthy — HTTP $STATUS"
+            echo "### Frontend Health: ✅ OK (HTTP $STATUS)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Frontend unhealthy — HTTP $STATUS"
+            echo "### Frontend Health: ❌ FAILED (HTTP $STATUS)" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi

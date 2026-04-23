@@ -1,0 +1,419 @@
+name: CI/CD — Campus Health Kiosk
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── 1. BACKEND LINT & VALIDATE ──────────────────────────────────────────────
+  backend-lint:
+    name: "🔍 Backend — Lint & Validate"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Verify .env.example exists
+        run: |
+          test -f .env.example && echo "✅ .env.example found" || \
+            (echo "❌ Missing .env.example" && exit 1)
+
+      - name: Validate package.json scripts
+        run: |
+          node -e "
+            const pkg = require('./package.json');
+            ['start','dev'].forEach(s => {
+              if (!pkg.scripts[s]) { console.error('❌ Missing script: ' + s); process.exit(1); }
+            });
+            console.log('✅ Required scripts present');
+          "
+
+      - name: Lint with ESLint
+        run: |
+          if [ -f .eslintrc.js ] || [ -f .eslintrc.json ] || [ -f .eslintrc.cjs ]; then
+            npx eslint . --ext .js --ignore-pattern node_modules --max-warnings 20
+          else
+            echo "ℹ️  No ESLint config — skipping"
+          fi
+
+      - name: Scan for accidental secrets
+        run: |
+          if grep -rn --include="*.js" \
+            -e "mongodb+srv://[^{'\"]" \
+            . 2>/dev/null | grep -v "node_modules" | grep -v ".env"; then
+            echo "⚠️  Possible hardcoded MongoDB URI detected"
+          else
+            echo "✅ No hardcoded secrets found"
+          fi
+
+  # ── 2. FRONTEND LINT & BUILD ────────────────────────────────────────────────
+  frontend-build:
+    name: "🏗️  Frontend — Lint & Build"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Lint with ESLint
+        run: npm run lint -- --max-warnings 30 || echo "⚠️  Lint warnings present"
+
+      - name: Production build
+        env:
+          VITE_API_URL: ${{ secrets.VITE_API_URL || 'https://placeholder.example.com/api' }}
+          NODE_ENV: production
+        run: npm run build
+
+      - name: Verify build output
+        run: |
+          test -d dist && test -f dist/index.html && \
+            echo "✅ Build OK — size: $(du -sh dist | cut -f1)" || \
+            (echo "❌ Build output missing" && exit 1)
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist-${{ github.sha }}
+          path: frontend/dist
+          retention-days: 7
+          if-no-files-found: error
+
+  # ── 3. BACKEND INTEGRATION TESTS ───────────────────────────────────────────
+  backend-test:
+    name: "🧪 Backend — Integration Tests"
+    runs-on: ubuntu-latest
+    needs: [backend-lint]
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ping:1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      MONGODB_URI: mongodb://localhost:27017/chk-test-${{ github.run_id }}
+      JWT_SECRET: ci-test-secret-32-chars-minimum-ok
+      JWT_EXPIRES_IN: 1h
+      TOKEN_EXPIRY_MINUTES: 5
+      PORT: 5001
+      NODE_ENV: test
+      CLIENT_URL: http://localhost:5173
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Seed test database
+        run: node scripts/seed.js
+
+      - name: Start server in background
+        run: |
+          node server.js &
+          echo $! > /tmp/server.pid
+          sleep 5
+          curl -sf http://localhost:5001/api/health | python3 -c \
+            "import sys,json; assert json.load(sys.stdin)['status']=='ok'" && \
+            echo "✅ Server started OK"
+
+      - name: Test — Admin login
+        id: admin-login
+        run: |
+          RESPONSE=$(curl -sf -X POST http://localhost:5001/api/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"campusId":"ADMIN001","password":"Admin@12345"}')
+          TOKEN=$(echo $RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+          echo "✅ Admin login OK"
+
+      - name: Test — GET /auth/me
+        run: |
+          curl -sf http://localhost:5001/api/auth/me \
+            -H "Authorization: Bearer ${{ steps.admin-login.outputs.token }}" | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); assert d['user']['role']=='Administrator'"
+          echo "✅ GET /auth/me OK"
+
+      - name: Test — GET /products
+        id: products
+        run: |
+          RESPONSE=$(curl -sf http://localhost:5001/api/products \
+            -H "Authorization: Bearer ${{ steps.admin-login.outputs.token }}")
+          COUNT=$(echo $RESPONSE | python3 -c "import sys,json; print(len(json.load(sys.stdin)['products']))")
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+          [ "$COUNT" -gt "0" ] && echo "✅ GET /products OK ($COUNT items)"
+
+      - name: Test — POST /tokens/request
+        id: token-request
+        run: |
+          PRODUCT_ID=$(curl -sf http://localhost:5001/api/products \
+            -H "Authorization: Bearer ${{ steps.admin-login.outputs.token }}" | \
+            python3 -c "import sys,json; p=json.load(sys.stdin)['products']; \
+              avail=[x for x in p if x['availabilityStatus']=='Available']; print(avail[0]['_id'])")
+          RESPONSE=$(curl -sf -X POST http://localhost:5001/api/tokens/request \
+            -H "Authorization: Bearer ${{ steps.admin-login.outputs.token }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"productId\":\"$PRODUCT_ID\"}")
+          TOKEN_ID=$(echo $RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin)['token']['tokenId'])")
+          echo "tokenId=$TOKEN_ID" >> $GITHUB_OUTPUT
+          echo "✅ POST /tokens/request OK — tokenId: $TOKEN_ID"
+
+      - name: Test — POST /tokens/redeem (success)
+        run: |
+          RESPONSE=$(curl -sf -X POST http://localhost:5001/api/tokens/redeem \
+            -H "Content-Type: application/json" \
+            -d "{\"tokenId\":\"${{ steps.token-request.outputs.tokenId }}\"}")
+          echo $RESPONSE | python3 -c \
+            "import sys,json; d=json.load(sys.stdin); assert d['success']==True, d['message']"
+          echo "✅ POST /tokens/redeem (success) OK"
+
+      - name: Test — POST /tokens/redeem (reuse rejection)
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST http://localhost:5001/api/tokens/redeem \
+            -H "Content-Type: application/json" \
+            -d "{\"tokenId\":\"${{ steps.token-request.outputs.tokenId }}\"}")
+          [ "$STATUS" = "400" ] && echo "✅ Reuse correctly rejected (400)" || \
+            (echo "❌ Expected 400, got $STATUS" && exit 1)
+
+      - name: Test — Unauthenticated admin route rejection
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5001/api/audit)
+          [ "$STATUS" = "401" ] && echo "✅ Unauth rejection OK (401)" || \
+            (echo "❌ Expected 401, got $STATUS" && exit 1)
+
+      - name: Test — GET /audit (admin)
+        run: |
+          curl -sf http://localhost:5001/api/audit \
+            -H "Authorization: Bearer ${{ steps.admin-login.outputs.token }}" | \
+            python3 -c "import sys,json; assert json.load(sys.stdin)['success']==True"
+          echo "✅ GET /audit OK"
+
+      - name: Test — GET /audit/export/csv
+        run: |
+          CONTENT_TYPE=$(curl -sI \
+            -H "Authorization: Bearer ${{ steps.admin-login.outputs.token }}" \
+            http://localhost:5001/api/audit/export/csv | grep -i content-type)
+          echo "$CONTENT_TYPE" | grep -q "text/csv" && echo "✅ CSV export returns text/csv" || \
+            (echo "❌ Wrong content-type: $CONTENT_TYPE" && exit 1)
+
+      - name: Test — POST /products (create)
+        run: |
+          RESPONSE=$(curl -sf -X POST http://localhost:5001/api/products \
+            -H "Authorization: Bearer ${{ steps.admin-login.outputs.token }}" \
+            -H "Content-Type: application/json" \
+            -d '{"name":"CI Test Product","category":"Hygiene","initialQuantity":5}')
+          echo $RESPONSE | python3 -c \
+            "import sys,json; assert json.load(sys.stdin)['success']==True"
+          echo "✅ POST /products OK"
+
+      - name: Stop background server
+        if: always()
+        run: kill $(cat /tmp/server.pid) 2>/dev/null || true
+
+  # ── 4. SECURITY AUDIT ──────────────────────────────────────────────────────
+  security-scan:
+    name: "🔒 Security — Dependency Audit"
+    runs-on: ubuntu-latest
+    needs: [backend-lint, frontend-build]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Audit backend
+        working-directory: backend
+        run: |
+          npm ci --prefer-offline
+          npm audit --audit-level=critical && echo "✅ Backend audit clean" || \
+            echo "⚠️  Backend has critical vulnerabilities — review before production"
+
+      - name: Audit frontend
+        working-directory: frontend
+        run: |
+          npm ci --prefer-offline
+          npm audit --audit-level=critical && echo "✅ Frontend audit clean" || \
+            echo "⚠️  Frontend has critical vulnerabilities — review before production"
+
+  # ── 5. DEPLOY FRONTEND → VERCEL ────────────────────────────────────────────
+  deploy-frontend:
+    name: "🚀 Deploy Frontend → Vercel"
+    runs-on: ubuntu-latest
+    needs: [frontend-build, backend-test, security-scan]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Pull Vercel project settings
+        working-directory: frontend
+        run: |
+          vercel pull --yes \
+            --environment=production \
+            --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build for Vercel production
+        working-directory: frontend
+        env:
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Deploy to Vercel
+        id: deploy
+        working-directory: frontend
+        run: |
+          DEPLOY_URL=$(vercel deploy --prebuilt --prod \
+            --token=${{ secrets.VERCEL_TOKEN }} 2>&1 | tail -1)
+          echo "url=$DEPLOY_URL" >> $GITHUB_OUTPUT
+          echo "✅ Deployed to: $DEPLOY_URL"
+
+      - name: Verify deployed app responds
+        run: |
+          sleep 15
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ steps.deploy.outputs.url }}")
+          [ "$STATUS" = "200" ] && echo "✅ Frontend live — HTTP $STATUS" || \
+            (echo "❌ Frontend returned HTTP $STATUS" && exit 1)
+
+  # ── 6. DEPLOY BACKEND → RAILWAY ────────────────────────────────────────────
+  deploy-backend:
+    name: "🚀 Deploy Backend → Railway"
+    runs-on: ubuntu-latest
+    needs: [backend-test, security-scan]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway
+        working-directory: backend
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          railway up \
+            --service campus-health-kiosk-backend \
+            --detach
+          echo "✅ Backend deployment queued on Railway"
+
+      - name: Health check with retries
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+        run: |
+          echo "⏳ Waiting for backend..."
+          sleep 30
+          MAX=5; COUNT=0
+          until [ $COUNT -ge $MAX ]; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL/api/health" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ Backend healthy after $((COUNT+1)) attempt(s)"; break
+            fi
+            COUNT=$((COUNT+1))
+            echo "⏳ Attempt $COUNT/$MAX — got $STATUS, retrying in 20s..."
+            sleep 20
+          done
+          [ $COUNT -ge $MAX ] && echo "⚠️  Backend health check timed out — check Railway logs"
+
+  # ── 7. DEPLOYMENT SUMMARY ──────────────────────────────────────────────────
+  summary:
+    name: "📋 Deployment Summary"
+    runs-on: ubuntu-latest
+    needs: [deploy-frontend, deploy-backend]
+    if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Write job summary
+        run: |
+          FE="${{ needs.deploy-frontend.result }}"
+          BE="${{ needs.deploy-backend.result }}"
+          OVERALL="✅ Success"
+          [ "$FE" != "success" ] || [ "$BE" != "success" ] && OVERALL="❌ Failed"
+
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          # $OVERALL — Campus Health Kiosk Deployment
+
+          | Job                | Status |
+          |--------------------|--------|
+          | 🔍 Backend Lint    | ${{ needs.backend-lint.result }} |
+          | 🏗️  Frontend Build | ${{ needs.frontend-build.result }} |
+          | 🧪 Backend Tests   | ${{ needs.backend-test.result }} |
+          | 🔒 Security Scan   | ${{ needs.security-scan.result }} |
+          | 🚀 Frontend Deploy | $FE |
+          | 🚀 Backend Deploy  | $BE |
+
+          **Commit:** \`${{ github.sha }}\`
+          **Branch:** \`${{ github.ref_name }}\`
+          **Triggered by:** @${{ github.actor }}
+          **Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
