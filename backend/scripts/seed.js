@@ -27,6 +27,20 @@ const seed = async () => {
     console.log('✅ Admin user created — campusId: ADMIN001 / password: Admin@12345');
   }
 
+  const studentExists = await User.findOne({ campusId: 'STU001' });
+if (!studentExists) {
+  await User.create({
+    campusId: 'STU001',
+    email: 'student@aui.ma',
+    name: 'Demo Student',
+    password: 'Student@12345',
+    role: 'Student',
+    ssoProvider: 'local',
+    status: 'Active',
+  });
+  console.log('✅ Demo student created — campusId: STU001 / password: Student@12345');
+}
+
   // Products
   const products = [
     { name: 'Bandage Rolls (5-pack)', category: 'First Aid', description: 'Standard adhesive bandages for minor cuts and scrapes.' },
