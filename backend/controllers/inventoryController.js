@@ -51,22 +51,38 @@ exports.getPolicy = async (req, res) => {
 // PUT /api/inventory/policy  — admin update policy
 exports.updatePolicy = async (req, res) => {
   try {
-    const { policyScope, timeWindow, maxPerUser, maxPerItem } = req.body;
+    const { policyScope, timeWindow, maxPerUser, maxPerItem, tokenExpiryMinutes } = req.body;
     let policy = await DispensingPolicy.findOne({ policyStatus: 'Active' });
 
     if (policy) {
-      policy.policyScope = policyScope || policy.policyScope;
-      policy.timeWindow = timeWindow || policy.timeWindow;
-      policy.maxPerUser = maxPerUser ?? policy.maxPerUser;
-      policy.maxPerItem = maxPerItem ?? policy.maxPerItem;
-      policy.updatedAt = new Date();
-      policy.updatedBy = req.user._id;
+      policy.policyScope        = policyScope        || policy.policyScope;
+      policy.timeWindow         = timeWindow         || policy.timeWindow;
+      policy.maxPerUser         = maxPerUser         ?? policy.maxPerUser;
+      policy.maxPerItem         = maxPerItem         ?? policy.maxPerItem;
+      policy.tokenExpiryMinutes = tokenExpiryMinutes ?? policy.tokenExpiryMinutes;
+      policy.updatedAt          = new Date();
+      policy.updatedBy          = req.user._id;
       await policy.save();
     } else {
-      policy = await DispensingPolicy.create({ policyScope, timeWindow, maxPerUser, maxPerItem, updatedBy: req.user._id });
+      policy = await DispensingPolicy.create({
+        policyScope,
+        timeWindow,
+        maxPerUser,
+        maxPerItem,
+        tokenExpiryMinutes,
+        updatedBy: req.user._id,
+      });
     }
 
-    await audit({ eventType: 'PolicyUpdated', actorRole: req.user.role, actor: req.user._id, targetObjectType: 'Policy', targetObjectId: policy._id.toString(), eventOutcome: 'Success', details: `Policy updated: max ${maxPerUser}/user per ${timeWindow}` });
+    await audit({
+      eventType: 'PolicyUpdated',
+      actorRole: req.user.role,
+      actor: req.user._id,
+      targetObjectType: 'Policy',
+      targetObjectId: policy._id.toString(),
+      eventOutcome: 'Success',
+      details: `Policy updated: max ${maxPerUser}/user per ${timeWindow}, token expiry: ${tokenExpiryMinutes}min`,
+    });
 
     res.json({ success: true, policy });
   } catch (err) {

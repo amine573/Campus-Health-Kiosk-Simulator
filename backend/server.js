@@ -7,6 +7,7 @@ const connectDB = require('./config/db');
 const authRoutes = require('./routes/auth');
 const productRoutes = require('./routes/products');
 const tokenRoutes = require('./routes/tokens');
+const categoryRoutes = require('./routes/categories');
 const { invRouter, auditRouter } = require('./routes/inventoryAudit');
 
 const app = express();
@@ -36,11 +37,12 @@ const tokenLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, message: { succes
 app.use(limiter);
 
 // ── Routes ──────────────────────────────────────────────────────────────────
-app.use('/api/auth', authRoutes);
-app.use('/api/products', productRoutes);
-app.use('/api/tokens', tokenLimiter, tokenRoutes);
-app.use('/api/inventory', invRouter);
-app.use('/api/audit', auditRouter);
+app.use('/api/auth',       authRoutes);
+app.use('/api/products',   productRoutes);
+app.use('/api/tokens',     tokenLimiter, tokenRoutes);
+app.use('/api/inventory',  invRouter);
+app.use('/api/audit',      auditRouter);
+app.use('/api/categories', categoryRoutes);
 
 app.get('/api/health', (_, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 

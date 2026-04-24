@@ -6,8 +6,9 @@ const ProductSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     category: {
       type: String,
-      enum: ['First Aid', 'Hygiene', 'Wellness', 'Vitamins', 'Other'],
       required: true,
+      trim: true,
+      // No enum — categories are managed dynamically via the Category collection
     },
     description: { type: String, trim: true },
     imageUrl: { type: String },

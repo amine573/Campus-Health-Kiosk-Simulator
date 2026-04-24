@@ -7,7 +7,8 @@ const RedemptionEvent = require('../models/RedemptionEvent');
 const AuditLogEntry = require('../models/AuditLogEntry');
 const { sendDispensingConfirmation } = require('../utils/emailService');
 
-const TOKEN_EXPIRY_MINUTES = parseInt(process.env.TOKEN_EXPIRY_MINUTES || '30');
+// Fallback only — real value comes from the active policy in DB
+const DEFAULT_TOKEN_EXPIRY_MINUTES = parseInt(process.env.TOKEN_EXPIRY_MINUTES || '30');
 
 const auditLog = async (data) => {
   try { await AuditLogEntry.create(data); } catch (_) {}
@@ -49,6 +50,10 @@ exports.requestToken = async (req, res) => {
 
     // FR-09/FR-10: policy enforcement
     const policy = await DispensingPolicy.findOne({ policyStatus: 'Active' });
+
+    // Read token expiry from policy, fall back to env/default
+    const tokenExpiryMinutes = policy?.tokenExpiryMinutes ?? DEFAULT_TOKEN_EXPIRY_MINUTES;
+
     if (policy) {
       const windowMs = policy.timeWindow === 'day' ? 86400000
         : policy.timeWindow === 'week' ? 604800000 : 2592000000;
@@ -63,7 +68,7 @@ exports.requestToken = async (req, res) => {
       if (userTokenCount >= policy.maxPerUser) {
         return res.status(429).json({
           success: false,
-          message: `Weekly limit reached (max ${policy.maxPerUser} items per ${policy.timeWindow})`,
+          message: `Limit reached (max ${policy.maxPerUser} items per ${policy.timeWindow})`,
           reason: 'Limit-exceeded',
         });
       }
@@ -84,8 +89,8 @@ exports.requestToken = async (req, res) => {
       }
     }
 
-    // FR-13/FR-14: generate token with expiry
-    const expiresAt = new Date(Date.now() + TOKEN_EXPIRY_MINUTES * 60 * 1000);
+    // FR-13/FR-14: generate token with expiry from policy
+    const expiresAt = new Date(Date.now() + tokenExpiryMinutes * 60 * 1000);
     const token = await Token.create({
       user: req.user._id,
       product: productId,
@@ -104,7 +109,7 @@ exports.requestToken = async (req, res) => {
       targetObjectType: 'Token',
       targetObjectId: token._id.toString(),
       eventOutcome: 'Success',
-      details: `Token issued for product ${product.name}`,
+      details: `Token issued for product ${product.name}, expires in ${tokenExpiryMinutes}min`,
     });
 
     await token.populate('product', 'name category imageUrl');
@@ -119,7 +124,7 @@ exports.requestToken = async (req, res) => {
         expiresAt: token.expiresAt,
         tokenStatus: token.tokenStatus,
         qrCodeDataUrl: token.qrCodeDataUrl,
-        expiresInMinutes: TOKEN_EXPIRY_MINUTES,
+        expiresInMinutes: tokenExpiryMinutes,
       },
     });
   } catch (err) {

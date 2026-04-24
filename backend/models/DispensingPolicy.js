@@ -26,6 +26,12 @@ const DispensingPolicySchema = new mongoose.Schema(
       min: [0, 'Max per item must be >= 0'],
       default: 1,
     },
+    tokenExpiryMinutes: {
+      type: Number,
+      required: true,
+      min: [1, 'Token expiry must be at least 1 minute'],
+      default: 30,
+    },
     policyStatus: {
       type: String,
       enum: ['Active', 'Inactive'],

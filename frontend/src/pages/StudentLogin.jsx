@@ -64,13 +64,6 @@ const StudentLogin = () => {
             </div>
 
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
-              {/* Security notice */}
-              <div className="flex gap-2.5 p-3 bg-brand-50 border border-brand-200 rounded-lg">
-                <Shield size={14} className="text-brand-700 flex-shrink-0 mt-0.5" />
-                <p className="text-xs text-brand-800 leading-relaxed">
-                  Access is restricted to authenticated campus members only.
-                </p>
-              </div>
 
               {/* Campus ID */}
               <div>
@@ -124,31 +117,6 @@ const StudentLogin = () => {
                   : <LogIn size={14} />}
                 {loading ? 'Signing in…' : 'Sign In'}
               </button>
-
-              {/* Demo credentials */}
-              <div className="border border-dashed border-slate-300 rounded-lg p-3 bg-slate-50">
-                <p className="text-xs font-semibold text-slate-600 mb-2">
-                  🧪 Demo Credentials
-                </p>
-                <div className="space-y-1 text-xs text-slate-500">
-                  <p>Campus ID: <span className="font-mono font-semibold text-slate-800">STU001</span></p>
-                  <p>Password: <span className="font-mono font-semibold text-slate-800">Student@12345</span></p>
-                </div>
-                <button
-                  type="button"
-                  onClick={fillDemo}
-                  className="mt-2 text-xs text-brand-700 font-medium hover:underline"
-                >
-                  Click to fill automatically →
-                </button>
-              </div>
-
-              <p className="text-center text-xs text-slate-500 pt-1">
-                Administrator?{' '}
-                <a href="/admin/login" className="text-brand-700 font-medium hover:underline">
-                  Sign in here
-                </a>
-              </p>
             </form>
           </div>
 

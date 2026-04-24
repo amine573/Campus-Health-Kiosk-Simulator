@@ -9,14 +9,13 @@ import { useAuth } from '../context/AuthContext';
 import api from '../utils/api';
 import toast from 'react-hot-toast';
 
-const CATEGORIES = ['All', 'First Aid', 'Hygiene', 'Wellness', 'Vitamins', 'Other'];
-
 const StudentPortal = () => {
   const { user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
 
   const [products, setProducts] = useState([]);
+  const [categories, setCategories] = useState(['All']);
   const [myTokens, setMyTokens] = useState([]);
   const [loading, setLoading] = useState(true);
   const [requestingId, setRequestingId] = useState(null);
@@ -34,12 +33,14 @@ const StudentPortal = () => {
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [prodRes, tokRes] = await Promise.all([
+      const [prodRes, tokRes, catRes] = await Promise.all([
         api.get('/products'),
         api.get('/tokens/my'),
+        api.get('/categories'),
       ]);
       setProducts(prodRes.data.products);
       setMyTokens(tokRes.data.tokens.filter((t) => t.tokenStatus === 'Issued'));
+      setCategories(['All', ...catRes.data.categories.map(c => c.name)]);
     } catch {
       toast.error('Failed to load catalog');
     } finally {
@@ -119,7 +120,7 @@ const StudentPortal = () => {
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <Filter size={14} className="text-slate-400 flex-shrink-0" />
-            {CATEGORIES.map((cat) => (
+            {categories.map((cat) => (
               <button
                 key={cat}
                 onClick={() => setCategory(cat)}

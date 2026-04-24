@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Package, BarChart3, FileText, Settings2, Plus, Pencil,
-  Trash2, RotateCcw, Download, Search, RefreshCw, ChevronUp, ChevronDown,
-  TrendingUp, CheckCircle, XCircle, AlertCircle
+  Package, BarChart3, FileText, Settings2, Plus,
+  Trash2, RotateCcw, Download, Search, RefreshCw,
+  TrendingUp, CheckCircle, XCircle, Tag, Pencil, X
 } from 'lucide-react';
 import Navbar from '../components/common/Navbar';
 import DeleteConfirmWizard from '../components/admin/DeleteConfirmWizard';
@@ -11,10 +11,11 @@ import api from '../utils/api';
 import toast from 'react-hot-toast';
 
 const TABS = [
-  { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
-  { id: 'inventory',  label: 'Inventory',  icon: Package },
-  { id: 'logs',       label: 'Audit Logs', icon: FileText },
-  { id: 'policy',     label: 'Policy',     icon: Settings2 },
+  { id: 'dashboard',  label: 'Dashboard',  icon: BarChart3  },
+  { id: 'inventory',  label: 'Inventory',  icon: Package    },
+  { id: 'categories', label: 'Categories', icon: Tag        },
+  { id: 'logs',       label: 'Audit Logs', icon: FileText   },
+  { id: 'policy',     label: 'Policy',     icon: Settings2  },
 ];
 
 const statusBadge = (s) => {
@@ -67,6 +68,7 @@ const DashboardTab = () => {
 // ─── Inventory Tab ────────────────────────────────────────────────────────────
 const InventoryTab = () => {
   const [products, setProducts] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editQty, setEditQty] = useState({});
   const [savingId, setSavingId] = useState(null);
@@ -75,16 +77,24 @@ const InventoryTab = () => {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [undoData, setUndoData] = useState(null);
   const [showForm, setShowForm] = useState(false);
-  const [newProduct, setNewProduct] = useState({ name:'', category:'Hygiene', description:'', initialQuantity:10 });
+  const [newProduct, setNewProduct] = useState({ name:'', category:'', description:'', initialQuantity:10 });
 
-  const fetch = useCallback(async () => {
+  const fetchProducts = useCallback(async () => {
     setLoading(true);
     try { const r = await api.get('/products'); setProducts(r.data.products); }
     catch { toast.error('Failed to load products'); }
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { fetch(); }, [fetch]);
+  useEffect(() => {
+    fetchProducts();
+    api.get('/categories').then(r => {
+      setCategories(r.data.categories);
+      if (r.data.categories.length > 0) {
+        setNewProduct(p => ({ ...p, category: r.data.categories[0].name }));
+      }
+    }).catch(() => {});
+  }, [fetchProducts]);
 
   const saveQty = async (productId) => {
     const qty = parseInt(editQty[productId]);
@@ -93,7 +103,7 @@ const InventoryTab = () => {
     try {
       await api.patch(`/inventory/${productId}`, { quantityOnHand: qty });
       toast.success('Inventory updated');
-      fetch();
+      fetchProducts();
     } catch (err) { toast.error(err.response?.data?.message || 'Update failed'); }
     finally { setSavingId(null); }
   };
@@ -115,7 +125,7 @@ const InventoryTab = () => {
       await api.patch(`/products/${undoData._id}/restore`);
       toast.success(`"${undoData.name}" restored`);
       setUndoData(null);
-      fetch();
+      fetchProducts();
     } catch { toast.error('Restore failed'); }
   };
 
@@ -125,8 +135,8 @@ const InventoryTab = () => {
       await api.post('/products', newProduct);
       toast.success('Product created');
       setShowForm(false);
-      setNewProduct({ name:'', category:'Hygiene', description:'', initialQuantity:10 });
-      fetch();
+      setNewProduct({ name:'', category: categories[0]?.name || '', description:'', initialQuantity:10 });
+      fetchProducts();
     } catch (err) { toast.error(err.response?.data?.message || 'Create failed'); }
   };
 
@@ -137,14 +147,13 @@ const InventoryTab = () => {
 
   return (
     <div className="space-y-4">
-      {/* Controls */}
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1 max-w-xs">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"/>
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search products…" className="input pl-9"/>
         </div>
         <div className="flex gap-2 ml-auto">
-          <button onClick={fetch} className="btn-secondary flex items-center gap-2">
+          <button onClick={fetchProducts} className="btn-secondary flex items-center gap-2">
             <RefreshCw size={14} className={loading?'animate-spin':''}/> Refresh
           </button>
           <button onClick={()=>setShowForm(v=>!v)} className="btn-primary flex items-center gap-2">
@@ -153,7 +162,6 @@ const InventoryTab = () => {
         </div>
       </div>
 
-      {/* Create form */}
       {showForm && (
         <div className="card p-5 border-brand-200">
           <p className="text-sm font-semibold text-slate-800 mb-4">New Product</p>
@@ -165,7 +173,7 @@ const InventoryTab = () => {
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">Category *</label>
               <select value={newProduct.category} onChange={e=>setNewProduct(p=>({...p,category:e.target.value}))} className="input">
-                {['First Aid','Hygiene','Wellness','Vitamins','Other'].map(c=><option key={c}>{c}</option>)}
+                {categories.map(c=><option key={c._id} value={c.name}>{c.name}</option>)}
               </select>
             </div>
             <div>
@@ -184,7 +192,6 @@ const InventoryTab = () => {
         </div>
       )}
 
-      {/* Table */}
       <div className="card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -224,7 +231,7 @@ const InventoryTab = () => {
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1">
                       {p.availabilityStatus === 'Disabled' ? (
-                        <button onClick={async()=>{ await api.patch(`/products/${p._id}/restore`); toast.success('Restored'); fetch(); }}
+                        <button onClick={async()=>{ await api.patch(`/products/${p._id}/restore`); toast.success('Restored'); fetchProducts(); }}
                           className="flex items-center gap-1 text-xs text-brand-700 hover:text-brand-800 px-2 py-1 rounded hover:bg-brand-50">
                           <RotateCcw size={12}/> Restore
                         </button>
@@ -246,7 +253,6 @@ const InventoryTab = () => {
         </div>
       </div>
 
-      {/* Delete wizard */}
       {deleteTarget && (
         <DeleteConfirmWizard
           product={deleteTarget}
@@ -255,8 +261,6 @@ const InventoryTab = () => {
           loading={deleteLoading}
         />
       )}
-
-      {/* Undo toast */}
       {undoData && (
         <UndoToast
           message={`"${undoData.name}" has been disabled`}
@@ -268,11 +272,206 @@ const InventoryTab = () => {
   );
 };
 
+// ─── Categories Tab ───────────────────────────────────────────────────────────
+const CategoriesTab = () => {
+  const [categories, setCategories] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editTarget, setEditTarget] = useState(null);
+  const [form, setForm] = useState({ name:'', description:'' });
+  const [saving, setSaving] = useState(false);
+
+  const fetchCategories = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await api.get('/categories/all');
+      setCategories(r.data.categories);
+    } catch { toast.error('Failed to load categories'); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { fetchCategories(); }, [fetchCategories]);
+
+  const openCreate = () => {
+    setEditTarget(null);
+    setForm({ name:'', description:'' });
+    setShowForm(true);
+  };
+
+  const openEdit = (cat) => {
+    setEditTarget(cat);
+    setForm({ name: cat.name, description: cat.description || '' });
+    setShowForm(true);
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      if (editTarget) {
+        await api.patch(`/categories/${editTarget._id}`, form);
+        toast.success('Category updated');
+      } else {
+        await api.post('/categories', form);
+        toast.success('Category created');
+      }
+      setShowForm(false);
+      fetchCategories();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggle = async (cat) => {
+    try {
+      await api.patch(`/categories/${cat._id}`, { isActive: !cat.isActive });
+      toast.success(cat.isActive ? 'Category deactivated' : 'Category reactivated');
+      fetchCategories();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Update failed');
+    }
+  };
+
+  const handleDelete = async (cat) => {
+    try {
+      await api.delete(`/categories/${cat._id}`);
+      toast.success('Category deactivated');
+      fetchCategories();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Delete failed');
+    }
+  };
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-900">Product Categories</h2>
+          <p className="text-xs text-slate-500 mt-0.5">Manage categories used in the product catalog</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={fetchCategories} className="btn-secondary flex items-center gap-2">
+            <RefreshCw size={14} className={loading?'animate-spin':''}/> Refresh
+          </button>
+          <button onClick={openCreate} className="btn-primary flex items-center gap-2">
+            <Plus size={14}/> Add Category
+          </button>
+        </div>
+      </div>
+
+      {showForm && (
+        <div className="card p-5 border-brand-200">
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-sm font-semibold text-slate-800">
+              {editTarget ? 'Edit Category' : 'New Category'}
+            </p>
+            <button onClick={()=>setShowForm(false)} className="p-1 rounded hover:bg-slate-100">
+              <X size={14} className="text-slate-500"/>
+            </button>
+          </div>
+          <form onSubmit={handleSubmit} className="space-y-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">Name *</label>
+              <input
+                required
+                value={form.name}
+                onChange={e=>setForm(f=>({...f,name:e.target.value}))}
+                className="input"
+                placeholder="e.g. Mental Health, Dental Care…"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">Description</label>
+              <input
+                value={form.description}
+                onChange={e=>setForm(f=>({...f,description:e.target.value}))}
+                className="input"
+                placeholder="Optional short description"
+              />
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button type="button" onClick={()=>setShowForm(false)} className="btn-secondary">Cancel</button>
+              <button type="submit" disabled={saving} className="btn-primary flex items-center gap-2">
+                {saving && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"/>}
+                {saving ? 'Saving…' : editTarget ? 'Update' : 'Create'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      <div className="card overflow-hidden">
+        {loading ? (
+          <div className="p-4 space-y-3">
+            {Array.from({length:5}).map((_,i)=>(
+              <div key={i} className="h-12 bg-slate-100 rounded animate-pulse"/>
+            ))}
+          </div>
+        ) : categories.length === 0 ? (
+          <div className="flex flex-col items-center gap-3 py-12">
+            <Tag size={32} className="text-slate-300"/>
+            <p className="text-sm text-slate-500">No categories yet — add one above</p>
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-200 text-left">
+                {['Name','Description','Status','Actions'].map(h=>(
+                  <th key={h} className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {categories.map(cat => (
+                <tr key={cat._id} className={`hover:bg-slate-50 ${!cat.isActive ? 'opacity-50' : ''}`}>
+                  <td className="px-4 py-3 font-medium text-slate-900">{cat.name}</td>
+                  <td className="px-4 py-3 text-xs text-slate-500 max-w-[200px] truncate">{cat.description || '—'}</td>
+                  <td className="px-4 py-3">
+                    <span className={`badge ${cat.isActive ? 'badge-green' : 'badge-yellow'}`}>
+                      {cat.isActive ? 'Active' : 'Inactive'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={()=>openEdit(cat)}
+                        className="flex items-center gap-1 text-xs text-slate-600 hover:text-brand-700 px-2 py-1 rounded hover:bg-brand-50"
+                      >
+                        <Pencil size={11}/> Edit
+                      </button>
+                      {cat.isActive ? (
+                        <button
+                          onClick={()=>handleDelete(cat)}
+                          className="flex items-center gap-1 text-xs text-red-600 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50"
+                        >
+                          <Trash2 size={11}/> Deactivate
+                        </button>
+                      ) : (
+                        <button
+                          onClick={()=>handleToggle(cat)}
+                          className="flex items-center gap-1 text-xs text-brand-700 hover:text-brand-800 px-2 py-1 rounded hover:bg-brand-50"
+                        >
+                          <RotateCcw size={11}/> Reactivate
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ─── Audit Logs Tab ───────────────────────────────────────────────────────────
 const AuditLogsTab = () => {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [users, setUsers] = useState([]);
   const [filter, setFilter] = useState({ eventType:'', userId:'', outcome:'' });
   const [exporting, setExporting] = useState(false);
 
@@ -310,7 +509,6 @@ const AuditLogsTab = () => {
 
   return (
     <div className="space-y-4">
-      {/* Filters + Export */}
       <div className="flex flex-wrap gap-3 items-end">
         <div>
           <label className="block text-xs font-medium text-slate-600 mb-1">Event Type</label>
@@ -374,11 +572,28 @@ const AuditLogsTab = () => {
 // ─── Policy Tab ────────────────────────────────────────────────────────────────
 const PolicyTab = () => {
   const [policy, setPolicy] = useState(null);
-  const [form, setForm] = useState({ policyScope:'Both', timeWindow:'week', maxPerUser:3, maxPerItem:1 });
+  const [form, setForm] = useState({
+    policyScope: 'Both',
+    timeWindow: 'week',
+    maxPerUser: 3,
+    maxPerItem: 1,
+    tokenExpiryMinutes: 30,
+  });
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.get('/inventory/policy').then(r=>{ if(r.data.policy){ setPolicy(r.data.policy); setForm(r.data.policy); }}).catch(()=>{});
+    api.get('/inventory/policy').then(r => {
+      if (r.data.policy) {
+        setPolicy(r.data.policy);
+        setForm({
+          policyScope:        r.data.policy.policyScope,
+          timeWindow:         r.data.policy.timeWindow,
+          maxPerUser:         r.data.policy.maxPerUser,
+          maxPerItem:         r.data.policy.maxPerItem,
+          tokenExpiryMinutes: r.data.policy.tokenExpiryMinutes ?? 30,
+        });
+      }
+    }).catch(() => {});
   }, []);
 
   const save = async (e) => {
@@ -401,9 +616,9 @@ const PolicyTab = () => {
         </div>
         <form onSubmit={save} className="space-y-4">
           {[
-            { key:'policyScope', label:'Policy Scope', type:'select', opts:['Per-user','Per-item','Both'] },
-            { key:'timeWindow',  label:'Time Window',  type:'select', opts:['day','week','month'] },
-          ].map(({key,label,type,opts})=>(
+            { key:'policyScope', label:'Policy Scope', opts:['Per-user','Per-item','Both'] },
+            { key:'timeWindow',  label:'Time Window',  opts:['day','week','month'] },
+          ].map(({key,label,opts})=>(
             <div key={key}>
               <label className="block text-xs font-medium text-slate-700 mb-1.5">{label}</label>
               <select value={form[key]} onChange={e=>setForm(f=>({...f,[key]:e.target.value}))} className="input">
@@ -412,23 +627,28 @@ const PolicyTab = () => {
             </div>
           ))}
           {[
-            { key:'maxPerUser', label:'Max items per user per window', min:0 },
-            { key:'maxPerItem', label:'Max of same item per user per window', min:0 },
+            { key:'maxPerUser',         label:'Max items per user per window',        min:0 },
+            { key:'maxPerItem',         label:'Max of same item per user per window',  min:0 },
+            { key:'tokenExpiryMinutes', label:'Token expiry (minutes)',                min:1 },
           ].map(({key,label,min})=>(
             <div key={key}>
               <label className="block text-xs font-medium text-slate-700 mb-1.5">{label}</label>
-              <input type="number" min={min} value={form[key]}
-                onChange={e=>setForm(f=>({...f,[key]:parseInt(e.target.value)||0}))} className="input"/>
+              <input
+                type="number" min={min} value={form[key]}
+                onChange={e=>setForm(f=>({...f,[key]:parseInt(e.target.value)||0}))}
+                className="input"
+              />
             </div>
           ))}
           <button type="submit" disabled={saving} className="btn-primary flex items-center gap-2">
-            {saving&&<span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"/>}
-            {saving?'Saving…':'Save Policy'}
+            {saving && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"/>}
+            {saving ? 'Saving…' : 'Save Policy'}
           </button>
         </form>
         {policy && (
           <div className="mt-5 p-3 bg-slate-50 border border-slate-200 rounded-lg">
             <p className="text-xs text-slate-500">Last updated: {new Date(policy.updatedAt).toLocaleString()}</p>
+            <p className="text-xs text-slate-500 mt-1">Token expiry: <span className="font-semibold text-slate-700">{policy.tokenExpiryMinutes ?? 30} minutes</span></p>
           </div>
         )}
       </div>
@@ -440,20 +660,23 @@ const PolicyTab = () => {
 const AdminDashboard = () => {
   const [tab, setTab] = useState('dashboard');
 
-  const TAB_CONTENT = { dashboard:<DashboardTab/>, inventory:<InventoryTab/>, logs:<AuditLogsTab/>, policy:<PolicyTab/> };
+  const TAB_CONTENT = {
+    dashboard:  <DashboardTab/>,
+    inventory:  <InventoryTab/>,
+    categories: <CategoriesTab/>,
+    logs:       <AuditLogsTab/>,
+    policy:     <PolicyTab/>,
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
       <Navbar />
-
       <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 flex-1">
-        {/* Page header */}
         <div className="mb-6">
           <h1 className="page-title">Administration</h1>
           <p className="text-sm text-slate-500 mt-0.5">Campus Health Kiosk — System Management</p>
         </div>
 
-        {/* Tab bar */}
         <div className="flex gap-1 bg-slate-100 p-1 rounded-lg mb-6 overflow-x-auto">
           {TABS.map(({ id, label, icon: Icon }) => (
             <button key={id} onClick={() => setTab(id)}
@@ -465,7 +688,6 @@ const AdminDashboard = () => {
           ))}
         </div>
 
-        {/* Tab content */}
         {TAB_CONTENT[tab]}
       </div>
     </div>
