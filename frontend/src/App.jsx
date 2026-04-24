@@ -3,10 +3,10 @@ import { Toaster } from 'react-hot-toast';
 import { AuthProvider } from './context/AuthContext';
 import ProtectedRoute from './components/common/ProtectedRoute';
 
-import StudentLogin  from './pages/StudentLogin';
-import AdminLogin    from './pages/AdminLogin';
-import StudentPortal from './pages/StudentPortal';
-import MyTokens      from './pages/MyTokens';
+import StudentLogin   from './pages/StudentLogin';
+import AdminLogin     from './pages/AdminLogin';
+import StudentPortal  from './pages/StudentPortal';
+import MyTokens       from './pages/MyTokens';
 import KioskInterface from './pages/KioskInterface';
 import AdminDashboard from './pages/AdminDashboard';
 
@@ -34,20 +34,29 @@ const App = () => (
       <Routes>
         {/* Public */}
         <Route path="/login"        element={<StudentLogin />} />
+        {/* NOTE: /admin/login must be declared before /admin/:tab so it isn't caught by the param route */}
         <Route path="/admin/login"  element={<AdminLogin />} />
         <Route path="/kiosk"        element={<KioskInterface />} />
         <Route path="/unauthorized" element={<Unauthorized />} />
 
         {/* Student / Staff */}
-        <Route path="/portal" element={<ProtectedRoute><StudentPortal /></ProtectedRoute>} />
+        <Route path="/portal"        element={<ProtectedRoute><StudentPortal /></ProtectedRoute>} />
         <Route path="/portal/tokens" element={<ProtectedRoute><MyTokens /></ProtectedRoute>} />
 
-        {/* Admin */}
-        <Route path="/admin" element={<ProtectedRoute requiredRole="Administrator"><AdminDashboard /></ProtectedRoute>} />
+        {/* Admin — /admin redirects to /admin/dashboard; tabs driven by :tab param */}
+        <Route path="/admin" element={<Navigate to="/admin/dashboard" replace />} />
+        <Route
+          path="/admin/:tab"
+          element={
+            <ProtectedRoute requiredRole="Administrator">
+              <AdminDashboard />
+            </ProtectedRoute>
+          }
+        />
 
-        {/* Redirects */}
-        <Route path="/" element={<Navigate to="/login" replace />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
+        {/* Catch-all */}
+        <Route path="/"  element={<Navigate to="/login" replace />} />
+        <Route path="*"  element={<Navigate to="/login" replace />} />
       </Routes>
     </BrowserRouter>
   </AuthProvider>

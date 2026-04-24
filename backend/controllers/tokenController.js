@@ -14,44 +14,60 @@ const auditLog = async (data) => {
   try { await AuditLogEntry.create(data); } catch (_) {}
 };
 
-// GET /api/tokens/my  — list current user's tokens
+// ── Sweep: bulk-mark all past-due Issued tokens as Expired in the DB ──────────
+exports.sweepExpiredTokens = async () => {
+  try {
+    const result = await Token.updateMany(
+      { tokenStatus: 'Issued', expiresAt: { $lt: new Date() } },
+      { $set: { tokenStatus: 'Expired' } }
+    );
+    if (result.modifiedCount > 0) {
+      console.log(`🧹 Swept ${result.modifiedCount} expired token(s) to Expired status`);
+    }
+  } catch (err) {
+    console.error('Token sweep error:', err.message);
+  }
+};
+
+// GET /api/tokens/my
 exports.getMyTokens = async (req, res) => {
   try {
+    // Mark any overdue tokens for this user as Expired before returning
+    await Token.updateMany(
+      { user: req.user._id, tokenStatus: 'Issued', expiresAt: { $lt: new Date() } },
+      { $set: { tokenStatus: 'Expired' } }
+    );
+
     const tokens = await Token.find({ user: req.user._id })
       .populate('product', 'name category imageUrl')
       .sort({ issuedAt: -1 })
       .limit(20);
+
     res.json({ success: true, tokens });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
-// POST /api/tokens/request  — FR-11 to FR-16
+// POST /api/tokens/request
 exports.requestToken = async (req, res) => {
   const { productId } = req.body;
-
   if (!productId) {
     return res.status(400).json({ success: false, message: 'productId required' });
   }
 
   try {
-    // FR-12: verify product availability
     const product = await Product.findById(productId);
     if (!product || product.availabilityStatus !== 'Available') {
       return res.status(400).json({ success: false, message: 'Product not available' });
     }
 
-    // Inventory check
     const inventory = await InventoryItem.findOne({ product: productId });
     if (!inventory || inventory.quantityOnHand <= 0) {
       return res.status(400).json({ success: false, message: 'Out of stock' });
     }
 
-    // FR-09/FR-10: policy enforcement
     const policy = await DispensingPolicy.findOne({ policyStatus: 'Active' });
-
-    // Read token expiry from policy, fall back to env/default
     const tokenExpiryMinutes = policy?.tokenExpiryMinutes ?? DEFAULT_TOKEN_EXPIRY_MINUTES;
 
     if (policy) {
@@ -59,7 +75,6 @@ exports.requestToken = async (req, res) => {
         : policy.timeWindow === 'week' ? 604800000 : 2592000000;
       const since = new Date(Date.now() - windowMs);
 
-      // Per-user limit
       const userTokenCount = await Token.countDocuments({
         user: req.user._id,
         issuedAt: { $gte: since },
@@ -73,7 +88,6 @@ exports.requestToken = async (req, res) => {
         });
       }
 
-      // Per-item limit
       const itemTokenCount = await Token.countDocuments({
         user: req.user._id,
         product: productId,
@@ -89,15 +103,9 @@ exports.requestToken = async (req, res) => {
       }
     }
 
-    // FR-13/FR-14: generate token with expiry from policy
     const expiresAt = new Date(Date.now() + tokenExpiryMinutes * 60 * 1000);
-    const token = await Token.create({
-      user: req.user._id,
-      product: productId,
-      expiresAt,
-    });
+    const token = await Token.create({ user: req.user._id, product: productId, expiresAt });
 
-    // FR-15: generate QR code encoding only tokenId (NFR-05: no PII in QR)
     const qrDataUrl = await QRCode.toDataURL(token.tokenId, { width: 256, margin: 1 });
     token.qrCodeDataUrl = qrDataUrl;
     await token.save();
@@ -132,52 +140,107 @@ exports.requestToken = async (req, res) => {
   }
 };
 
-// POST /api/tokens/redeem  — FR-17 to FR-24 (kiosk endpoint)
+// POST /api/tokens/redeem
 exports.redeemToken = async (req, res) => {
   const { tokenId } = req.body;
-
   if (!tokenId) {
     return res.status(400).json({ success: false, message: 'tokenId required' });
   }
 
   try {
-    // FR-18: validate token
     const token = await Token.findOne({ tokenId }).populate('user product');
     if (!token) {
+      // Log failed attempt for unknown token
+      await auditLog({
+        eventType: 'TokenRedeemed',
+        actorRole: 'System',
+        actor: null,
+        targetObjectType: 'Token',
+        targetObjectId: null,
+        eventOutcome: 'Failure',
+        details: `Redemption failed — token not found: ${tokenId}`,
+      });
       return res.status(404).json({ success: false, message: 'Token not found', reason: 'Invalid' });
     }
 
     if (token.tokenStatus === 'Redeemed') {
-      await RedemptionEvent.create({ token: token._id, user: token.user._id, product: token.product._id, result: 'Rejected', rejectionReason: 'Reused', occurredAt: new Date() });
+      await RedemptionEvent.create({
+        token: token._id, user: token.user._id, product: token.product._id,
+        result: 'Rejected', rejectionReason: 'Reused', occurredAt: new Date(),
+      });
+      // ✅ Audit failure so Failed Attempts counter increments
+      await auditLog({
+        eventType: 'TokenRedeemed',
+        actorRole: token.user.role,
+        actor: token.user._id,
+        targetObjectType: 'Token',
+        targetObjectId: token._id.toString(),
+        eventOutcome: 'Failure',
+        details: `Redemption failed — token already redeemed: ${token.product.name}`,
+      });
       return res.status(400).json({ success: false, message: 'Token already redeemed', reason: 'Reused' });
     }
 
     if (token.tokenStatus === 'Expired' || token.isExpired()) {
-      token.tokenStatus = 'Expired';
-      await token.save();
-      await RedemptionEvent.create({ token: token._id, user: token.user._id, product: token.product._id, result: 'Rejected', rejectionReason: 'Expired', occurredAt: new Date() });
+      if (token.tokenStatus !== 'Expired') {
+        token.tokenStatus = 'Expired';
+        await token.save();
+      }
+      await RedemptionEvent.create({
+        token: token._id, user: token.user._id, product: token.product._id,
+        result: 'Rejected', rejectionReason: 'Expired', occurredAt: new Date(),
+      });
+      // ✅ Audit failure so Failed Attempts counter increments
+      await auditLog({
+        eventType: 'TokenRedeemed',
+        actorRole: token.user.role,
+        actor: token.user._id,
+        targetObjectType: 'Token',
+        targetObjectId: token._id.toString(),
+        eventOutcome: 'Failure',
+        details: `Redemption failed — token expired: ${token.product.name}`,
+      });
       return res.status(400).json({ success: false, message: 'Token has expired', reason: 'Expired' });
     }
 
     if (token.tokenStatus !== 'Issued') {
+      await auditLog({
+        eventType: 'TokenRedeemed',
+        actorRole: token.user.role,
+        actor: token.user._id,
+        targetObjectType: 'Token',
+        targetObjectId: token._id.toString(),
+        eventOutcome: 'Failure',
+        details: `Redemption failed — invalid token status: ${token.tokenStatus}`,
+      });
       return res.status(400).json({ success: false, message: 'Token is not valid', reason: 'Invalid' });
     }
 
-    // FR-20: verify inventory at redemption time
     const inventory = await InventoryItem.findOne({ product: token.product._id });
     if (!inventory || inventory.quantityOnHand <= 0) {
-      await RedemptionEvent.create({ token: token._id, user: token.user._id, product: token.product._id, result: 'Rejected', rejectionReason: 'Out-of-stock', occurredAt: new Date() });
+      await RedemptionEvent.create({
+        token: token._id, user: token.user._id, product: token.product._id,
+        result: 'Rejected', rejectionReason: 'Out-of-stock', occurredAt: new Date(),
+      });
+      // ✅ Audit failure so Failed Attempts counter increments
+      await auditLog({
+        eventType: 'TokenRedeemed',
+        actorRole: token.user.role,
+        actor: token.user._id,
+        targetObjectType: 'Token',
+        targetObjectId: token._id.toString(),
+        eventOutcome: 'Failure',
+        details: `Redemption failed — out of stock: ${token.product.name}`,
+      });
       return res.status(400).json({ success: false, message: 'Product is out of stock', reason: 'Out-of-stock' });
     }
 
-    // FR-21/FR-22: atomic-style update — mark redeemed + decrement inventory
+    // Success path
     token.tokenStatus = 'Redeemed';
     token.redeemedAt = new Date();
     await token.save();
-
     await inventory.decrement();
 
-    // FR-24: record redemption event
     const redemptionEvent = await RedemptionEvent.create({
       token: token._id,
       user: token.user._id,
@@ -197,7 +260,6 @@ exports.redeemToken = async (req, res) => {
       details: `Redeemed: ${token.product.name}`,
     });
 
-    // Email verification after dispensing
     const emailSent = await sendDispensingConfirmation({
       userEmail: token.user.email,
       userName: token.user.name,
@@ -209,7 +271,6 @@ exports.redeemToken = async (req, res) => {
       await RedemptionEvent.findByIdAndUpdate(redemptionEvent._id, { emailSent: true });
     }
 
-    // FR-23: simulate dispensing
     res.json({
       success: true,
       message: 'Dispensing successful — please collect your item',
